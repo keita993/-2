@@ -1,5 +1,4 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -10,8 +9,8 @@ import jwt
 import os
 import time
 import random
-import requests
 from dotenv import load_dotenv
+import kabupy
 
 # 環境変数の読み込み
 load_dotenv()
@@ -84,7 +83,7 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0'
 ]
 
-# リクエスト制御用のセッション状態の初期化
+# セッション状態の初期化
 if 'stock_data_cache' not in st.session_state:
     st.session_state.stock_data_cache = {}
 if 'last_request_time' not in st.session_state:
@@ -150,40 +149,61 @@ def get_random_proxy():
     """ランダムなプロキシを選択"""
     return random.choice(PROXIES)
 
-def get_stock_data(tickers, period='1y', max_retries=3):
-    """株価データを取得（バッチ処理対応）"""
-    if isinstance(tickers, str):
-        tickers = [tickers]
+def get_stock_data(ticker, period='1y'):
+    """株価データを取得"""
+    # キャッシュの確認
+    cache_key = f"{ticker}_{period}"
+    if cache_key in st.session_state.stock_data_cache:
+        cached_data, timestamp = st.session_state.stock_data_cache[cache_key]
+        if (datetime.now() - timestamp).total_seconds() < 3600:
+            return cached_data
     
-    results = {}
-    for i in range(0, len(tickers), BATCH_SIZE):
-        batch = tickers[i:i+BATCH_SIZE]
-        for ticker in batch:
-            try:
-                # プロキシの設定
-                proxy = get_random_proxy()
-                session = requests.Session()
-                session.proxies = proxy
-                
-                # ランダムな遅延
-                delay = random.uniform(MIN_REQUEST_INTERVAL, MAX_REQUEST_INTERVAL)
-                time.sleep(delay)
-                
-                # データ取得
-                stock = yf.Ticker(ticker)
-                data = stock.history(period=period)
-                
-                if not data.empty:
-                    results[ticker] = data
-                    # キャッシュに保存
-                    cache_key = f"{ticker}_{period}"
-                    st.session_state.stock_data_cache[cache_key] = (data, datetime.now())
-                
-            except Exception as e:
-                st.error(f"データの取得に失敗しました: {ticker} - {str(e)}")
-                continue
-    
-    return results
+    try:
+        # kabupyを使用してデータを取得
+        stock = kabupy.kabuyoho.stock(ticker)
+        
+        # 期間に応じてデータを取得
+        if period == '1mo':
+            data = stock.daily_data()
+            data = data.tail(30)  # 直近30日分を取得
+        elif period == '3mo':
+            data = stock.daily_data()
+            data = data.tail(90)  # 直近90日分を取得
+        elif period == '6mo':
+            data = stock.daily_data()
+            data = data.tail(180)  # 直近180日分を取得
+        elif period == '1y':
+            data = stock.daily_data()
+            data = data.tail(365)  # 直近365日分を取得
+        elif period == '2y':
+            data = stock.daily_data()
+            data = data.tail(730)  # 直近730日分を取得
+        elif period == '5y':
+            data = stock.monthly_data()  # 月足データを使用
+            data = data.tail(60)  # 直近60ヶ月分を取得
+        else:  # 10y
+            data = stock.monthly_data()  # 月足データを使用
+            data = data.tail(120)  # 直近120ヶ月分を取得
+        
+        if data is not None and not data.empty:
+            # データの形式を調整
+            data = data.rename(columns={
+                '始値': 'Open',
+                '高値': 'High',
+                '安値': 'Low',
+                '終値': 'Close',
+                '出来高': 'Volume'
+            })
+            # キャッシュに保存
+            st.session_state.stock_data_cache[cache_key] = (data, datetime.now())
+            return data
+        else:
+            st.error(f"データが取得できませんでした: {ticker}")
+            return None
+            
+    except Exception as e:
+        st.error(f"データの取得に失敗しました: {str(e)}")
+        return None
 
 def normalize_ticker(ticker):
     if ticker.isdigit():
@@ -192,18 +212,13 @@ def normalize_ticker(ticker):
 
 def get_stock_name(ticker):
     """銘柄名を取得する"""
-    ticker_to_fetch = normalize_ticker(ticker)
-    stock = yf.Ticker(ticker_to_fetch)
     try:
-        stock_info = stock.info
-        stock_name = stock_info.get('longName', '') or stock_info.get('shortName', '') or ticker_to_fetch
-        if '.T' in ticker_to_fetch:
-            stock_name = f"{stock_name} ({ticker_to_fetch.replace('.T', '')})"
-        else:
-            stock_name = f"{stock_name} ({ticker_to_fetch})"
-        return stock_name, stock_info
+        stock = kabupy.kabuyoho.stock(ticker)
+        stock_info = stock.report_target
+        stock_name = stock_info.company_name
+        return f"{stock_name} ({ticker})", stock_info
     except:
-        return ticker_to_fetch, None
+        return ticker, None
 
 def calculate_rsi(data, period=14):
     return ta.momentum.RSIIndicator(data['Close'], window=period).rsi()
