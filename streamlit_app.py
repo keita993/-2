@@ -8,6 +8,7 @@ import ta
 import sqlite3
 import jwt
 import os
+import time
 from dotenv import load_dotenv
 
 # 環境変数の読み込み
@@ -90,18 +91,59 @@ def calculate_sdi(data, period=20):
     
     return sdi
 
-def get_stock_data(ticker, period):
-    try:
-        normalized_ticker = normalize_ticker(ticker)
-        stock = yf.Ticker(normalized_ticker)
-        data = stock.history(period=period)
-        if len(data) == 0:
-            st.error(f"データが取得できませんでした: {ticker}")
-            return None
-        return data
-    except Exception as e:
-        st.error(f"データの取得に失敗しました: {str(e)}")
-        return None
+# キャッシュ用のセッション状態の初期化
+if 'stock_data_cache' not in st.session_state:
+    st.session_state.stock_data_cache = {}
+if 'last_request_time' not in st.session_state:
+    st.session_state.last_request_time = {}
+
+def get_stock_data(ticker, period, max_retries=3, retry_delay=5):
+    """株価データを取得する（リトライ処理付き）"""
+    # キャッシュの確認
+    cache_key = f"{ticker}_{period}"
+    if cache_key in st.session_state.stock_data_cache:
+        cached_data, timestamp = st.session_state.stock_data_cache[cache_key]
+        # キャッシュが1時間以内の場合は再利用
+        if (datetime.now() - timestamp).total_seconds() < 3600:
+            return cached_data
+    
+    # レート制限の確認
+    current_time = time.time()
+    if ticker in st.session_state.last_request_time:
+        last_request = st.session_state.last_request_time[ticker]
+        if current_time - last_request < 2:  # 2秒以上の間隔を空ける
+            time.sleep(2)
+    
+    for attempt in range(max_retries):
+        try:
+            normalized_ticker = normalize_ticker(ticker)
+            stock = yf.Ticker(normalized_ticker)
+            data = stock.history(period=period)
+            
+            if len(data) == 0:
+                st.error(f"データが取得できませんでした: {ticker}")
+                return None
+            
+            # キャッシュに保存
+            st.session_state.stock_data_cache[cache_key] = (data, datetime.now())
+            st.session_state.last_request_time[ticker] = current_time
+            
+            return data
+            
+        except Exception as e:
+            if "Too Many Requests" in str(e):
+                if attempt < max_retries - 1:
+                    st.warning(f"リクエスト制限に達しました。{retry_delay}秒後に再試行します...")
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    st.error("リクエスト制限に達しました。しばらく時間をおいてから再度お試しください。")
+                    return None
+            else:
+                st.error(f"データの取得に失敗しました: {str(e)}")
+                return None
+    
+    return None
 
 def normalize_ticker(ticker):
     if ticker.isdigit():
