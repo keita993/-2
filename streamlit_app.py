@@ -26,6 +26,16 @@ def get_db():
     if 'db_conn' not in st.session_state:
         st.session_state.db_conn = sqlite3.connect('users.db')
         st.session_state.db_conn.row_factory = sqlite3.Row
+        # データベースの初期化
+        cursor = st.session_state.db_conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL
+            )
+        ''')
+        st.session_state.db_conn.commit()
     return st.session_state.db_conn
 
 # ユーザー認証関連の関数
@@ -249,12 +259,14 @@ def calculate_backtest(data, buy_threshold=30, sell_threshold=0, disable_sell=Fa
 st.title("株式期待値分析ツール")
 
 # セッション状態の初期化
+if 'stock_data' not in st.session_state:
+    st.session_state.stock_data = {}
+
+# セッション状態の初期化
 if 'user' not in st.session_state:
     st.session_state.user = None
-if 'stock_data' not in st.session_state:
-    st.session_state.stock_data = None
 if 'backtest_results' not in st.session_state:
-    st.session_state.backtest_results = None
+    st.session_state.backtest_results = {}
 
 # 認証状態に応じて表示を切り替え
 if st.session_state.user is None:
@@ -293,34 +305,29 @@ else:
     st.sidebar.header("ポートフォリオ")
     if st.sidebar.button("ポートフォリオに追加"):
         if ticker not in st.session_state.stock_data:
-            st.session_state.stock_data[ticker] = get_stock_data(ticker, "1d")
-            if st.session_state.stock_data[ticker] is not None:
-                stock_name, stock_info = get_stock_name(ticker)
-                latest_price = st.session_state.stock_data[ticker]['Close'].iloc[-1]
-                sdi = calculate_sdi(st.session_state.stock_data[ticker]).iloc[-1]
-                st.session_state.backtest_results[ticker] = {
-                    'name': stock_name,
-                    'price': latest_price,
-                    'sdi': sdi,
-                    'info': stock_info
-                }
-            st.success(f"{ticker}をポートフォリオに追加しました")
+            stock_data = get_stock_data(ticker, period)
+            if stock_data is not None:
+                st.session_state.stock_data[ticker] = stock_data
+                st.success(f"{ticker}をポートフォリオに追加しました")
+            else:
+                st.error(f"{ticker}のデータを取得できませんでした")
     
     if st.session_state.stock_data:
         st.sidebar.write("保有銘柄:")
-        for p in st.session_state.stock_data:
+        for ticker in st.session_state.stock_data:
             col1, col2, col3 = st.sidebar.columns([2, 2, 1])
-            col1.write(p)
-            if p in st.session_state.backtest_results:
-                data = st.session_state.backtest_results[p]
+            col1.write(ticker)
+            if ticker in st.session_state.backtest_results:
+                data = st.session_state.backtest_results[ticker]
                 col2.write(f"¥{data['price']:,.0f}")
-            if col3.button("削除", key=f"del_{p}"):
-                st.session_state.stock_data.pop(p)
-                st.session_state.backtest_results.pop(p)
+            if col3.button("削除", key=f"del_{ticker}"):
+                st.session_state.stock_data.pop(ticker)
+                if ticker in st.session_state.backtest_results:
+                    st.session_state.backtest_results.pop(ticker)
                 st.rerun()
     
     # メインコンテンツ
-    if ticker:
+    if ticker and ticker in st.session_state.stock_data:
         data = st.session_state.stock_data[ticker]
         if data is not None and len(data) > 0:
             # 株価チャート
@@ -388,6 +395,10 @@ else:
             if st.button("バックテスト実行"):
                 result = calculate_backtest(data, buy_threshold, sell_threshold, disable_sell, shares)
                 if result:
+                    st.session_state.backtest_results[ticker] = {
+                        'price': data['Close'].iloc[-1],
+                        'result': result
+                    }
                     st.subheader("取引履歴")
                     trades_df = pd.DataFrame(result['trades'])
                     if len(trades_df) > 0:
