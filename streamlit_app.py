@@ -16,11 +16,13 @@ load_dotenv()
 # ページ設定
 st.set_page_config(
     page_title="株式期待値分析ツール",
-    page_icon="📈",
-    layout="wide"
+    page_icon="��",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# データベース接続
+# キャッシュ設定
+@st.cache_data(ttl=3600)
 def get_db():
     conn = sqlite3.connect('users.db')
     conn.row_factory = sqlite3.Row
@@ -248,10 +250,10 @@ st.title("株式期待値分析ツール")
 # セッション状態の初期化
 if 'user' not in st.session_state:
     st.session_state.user = None
-if 'portfolio' not in st.session_state:
-    st.session_state.portfolio = []
-if 'portfolio_data' not in st.session_state:
-    st.session_state.portfolio_data = {}
+if 'stock_data' not in st.session_state:
+    st.session_state.stock_data = None
+if 'backtest_results' not in st.session_state:
+    st.session_state.backtest_results = None
 
 # 認証状態に応じて表示を切り替え
 if st.session_state.user is None:
@@ -289,15 +291,13 @@ else:
     # ポートフォリオ管理
     st.sidebar.header("ポートフォリオ")
     if st.sidebar.button("ポートフォリオに追加"):
-        if ticker not in st.session_state.portfolio:
-            st.session_state.portfolio.append(ticker)
-            # 株価データを取得
-            data = get_stock_data(ticker, "1d")
-            if data is not None:
+        if ticker not in st.session_state.stock_data:
+            st.session_state.stock_data[ticker] = get_stock_data(ticker, "1d")
+            if st.session_state.stock_data[ticker] is not None:
                 stock_name, stock_info = get_stock_name(ticker)
-                latest_price = data['Close'].iloc[-1]
-                sdi = calculate_sdi(data).iloc[-1]
-                st.session_state.portfolio_data[ticker] = {
+                latest_price = st.session_state.stock_data[ticker]['Close'].iloc[-1]
+                sdi = calculate_sdi(st.session_state.stock_data[ticker]).iloc[-1]
+                st.session_state.backtest_results[ticker] = {
                     'name': stock_name,
                     'price': latest_price,
                     'sdi': sdi,
@@ -305,23 +305,22 @@ else:
                 }
             st.success(f"{ticker}をポートフォリオに追加しました")
     
-    if st.session_state.portfolio:
+    if st.session_state.stock_data:
         st.sidebar.write("保有銘柄:")
-        for p in st.session_state.portfolio:
+        for p in st.session_state.stock_data:
             col1, col2, col3 = st.sidebar.columns([2, 2, 1])
             col1.write(p)
-            if p in st.session_state.portfolio_data:
-                data = st.session_state.portfolio_data[p]
+            if p in st.session_state.backtest_results:
+                data = st.session_state.backtest_results[p]
                 col2.write(f"¥{data['price']:,.0f}")
             if col3.button("削除", key=f"del_{p}"):
-                st.session_state.portfolio.remove(p)
-                if p in st.session_state.portfolio_data:
-                    del st.session_state.portfolio_data[p]
+                st.session_state.stock_data.pop(p)
+                st.session_state.backtest_results.pop(p)
                 st.rerun()
     
     # メインコンテンツ
     if ticker:
-        data = get_stock_data(ticker, period)
+        data = st.session_state.stock_data[ticker]
         if data is not None and len(data) > 0:
             # 株価チャート
             fig = go.Figure()
@@ -407,6 +406,6 @@ else:
     # ログアウトボタン
     if st.sidebar.button("ログアウト"):
         st.session_state.user = None
-        st.session_state.portfolio = []
-        st.session_state.portfolio_data = {}
+        st.session_state.stock_data = {}
+        st.session_state.backtest_results = {}
         st.rerun() 
