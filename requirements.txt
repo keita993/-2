@@ -1,4 +1,7 @@
 flask
 yfinance
 pandas
-pandas_ta
+streamlit
+plotly
+numpy
+ta-lib
