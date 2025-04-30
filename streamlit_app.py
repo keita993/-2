@@ -16,6 +16,18 @@ from dotenv import load_dotenv
 # 環境変数の読み込み
 load_dotenv()
 
+# プロキシ設定
+PROXIES = [
+    {'http': 'http://proxy1.example.com:8080', 'https': 'http://proxy1.example.com:8080'},
+    {'http': 'http://proxy2.example.com:8080', 'https': 'http://proxy2.example.com:8080'},
+    # 実際のプロキシサーバー情報を追加
+]
+
+# バッチ処理用の設定
+BATCH_SIZE = 5  # 一度に取得する銘柄数
+MIN_REQUEST_INTERVAL = 3  # 最小リクエスト間隔（秒）
+MAX_REQUEST_INTERVAL = 8  # 最大リクエスト間隔（秒）
+
 # ページ設定
 st.set_page_config(
     page_title="株式期待値分析ツール",
@@ -134,75 +146,44 @@ def check_rate_limit():
     
     return True
 
-def get_stock_data(ticker, period, max_retries=5, base_delay=5):
-    """株価データを取得する（強化版リトライ処理付き）"""
-    # キャッシュの確認
-    cache_key = f"{ticker}_{period}"
-    if cache_key in st.session_state.stock_data_cache:
-        cached_data, timestamp = st.session_state.stock_data_cache[cache_key]
-        # キャッシュが1時間以内の場合は再利用
-        if (datetime.now() - timestamp).total_seconds() < 3600:
-            return cached_data
+def get_random_proxy():
+    """ランダムなプロキシを選択"""
+    return random.choice(PROXIES)
+
+def get_stock_data(tickers, period='1y', max_retries=3):
+    """株価データを取得（バッチ処理対応）"""
+    if isinstance(tickers, str):
+        tickers = [tickers]
     
-    # レート制限のチェック
-    if not check_rate_limit():
-        return None
-    
-    # リクエスト間隔の制御
-    current_time = time.time()
-    if ticker in st.session_state.last_request_time:
-        last_request = st.session_state.last_request_time[ticker]
-        delay = random.uniform(3, 10)  # 3-10秒のランダムな遅延
-        if current_time - last_request < delay:
-            time.sleep(delay)
-    
-    for attempt in range(max_retries):
-        try:
-            # ランダムなヘッダーを設定
-            headers = get_random_headers()
-            normalized_ticker = normalize_ticker(ticker)
-            
-            # セッションを作成してリクエスト
-            session = requests.Session()
-            session.headers.update(headers)
-            
-            # 複数銘柄の一括取得を試みる
-            if isinstance(ticker, list):
-                data = yf.download(ticker, period=period)
-            else:
-                stock = yf.Ticker(normalized_ticker)
+    results = {}
+    for i in range(0, len(tickers), BATCH_SIZE):
+        batch = tickers[i:i+BATCH_SIZE]
+        for ticker in batch:
+            try:
+                # プロキシの設定
+                proxy = get_random_proxy()
+                session = requests.Session()
+                session.proxies = proxy
+                
+                # ランダムな遅延
+                delay = random.uniform(MIN_REQUEST_INTERVAL, MAX_REQUEST_INTERVAL)
+                time.sleep(delay)
+                
+                # データ取得
+                stock = yf.Ticker(ticker)
                 data = stock.history(period=period)
-            
-            if len(data) == 0:
-                st.error(f"データが取得できませんでした: {ticker}")
-                return None
-            
-            # リクエストカウントを更新
-            st.session_state.request_count['minute'] += 1
-            st.session_state.request_count['hour'] += 1
-            
-            # キャッシュに保存
-            st.session_state.stock_data_cache[cache_key] = (data, datetime.now())
-            st.session_state.last_request_time[ticker] = current_time
-            
-            return data
-            
-        except Exception as e:
-            if "Too Many Requests" in str(e):
-                if attempt < max_retries - 1:
-                    # 指数バックオフによる遅延
-                    delay = base_delay * (2 ** attempt) + random.uniform(0, 3)
-                    st.warning(f"リクエスト制限に達しました。{delay:.1f}秒後に再試行します...")
-                    time.sleep(delay)
-                    continue
-                else:
-                    st.error("リクエスト制限に達しました。しばらく時間をおいてから再度お試しください。")
-                    return None
-            else:
-                st.error(f"データの取得に失敗しました: {str(e)}")
-                return None
+                
+                if not data.empty:
+                    results[ticker] = data
+                    # キャッシュに保存
+                    cache_key = f"{ticker}_{period}"
+                    st.session_state.stock_data_cache[cache_key] = (data, datetime.now())
+                
+            except Exception as e:
+                st.error(f"データの取得に失敗しました: {ticker} - {str(e)}")
+                continue
     
-    return None
+    return results
 
 def normalize_ticker(ticker):
     if ticker.isdigit():
