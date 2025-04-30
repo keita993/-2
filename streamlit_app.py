@@ -24,6 +24,45 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# データベース接続関数
+def get_db():
+    if 'db_conn' not in st.session_state:
+        st.session_state.db_conn = sqlite3.connect('users.db')
+        st.session_state.db_conn.row_factory = sqlite3.Row
+        # データベースの初期化
+        cursor = st.session_state.db_conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL
+            )
+        ''')
+        st.session_state.db_conn.commit()
+    return st.session_state.db_conn
+
+# ユーザー認証関連の関数
+def create_user(username, password):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('INSERT INTO users (username, password_hash) VALUES (?, ?)',
+                  (username, password))
+    conn.commit()
+
+def get_user(username):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
+    user = cursor.fetchone()
+    return user
+
+def create_token(user_id):
+    payload = {
+        'user': user_id,
+        'exp': datetime.utcnow() + timedelta(days=1)
+    }
+    return jwt.encode(payload, os.getenv('FLASK_SECRET_KEY', 'supersecretkey'), algorithm='HS256')
+
 # ユーザーエージェントのリスト（最新のブラウザバージョン）
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
