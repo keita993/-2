@@ -4,4 +4,4 @@ pandas==2.2.3
 streamlit==1.45.0
 plotly==6.0.1
 numpy==2.2.5
-ta-lib==0.6.3
+pandas_ta==0.3.14b
