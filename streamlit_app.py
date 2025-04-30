@@ -16,17 +16,17 @@ load_dotenv()
 # ページ設定
 st.set_page_config(
     page_title="株式期待値分析ツール",
-    page_icon="��",
+    page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# キャッシュ設定
-@st.cache_data(ttl=3600)
+# データベース接続関数
 def get_db():
-    conn = sqlite3.connect('users.db')
-    conn.row_factory = sqlite3.Row
-    return conn
+    if 'db_conn' not in st.session_state:
+        st.session_state.db_conn = sqlite3.connect('users.db')
+        st.session_state.db_conn.row_factory = sqlite3.Row
+    return st.session_state.db_conn
 
 # ユーザー認証関連の関数
 def create_user(username, password):
@@ -35,14 +35,12 @@ def create_user(username, password):
     cursor.execute('INSERT INTO users (username, password_hash) VALUES (?, ?)',
                   (username, password))
     conn.commit()
-    conn.close()
 
 def get_user(username):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
     user = cursor.fetchone()
-    conn.close()
     return user
 
 def create_token(user_id):
