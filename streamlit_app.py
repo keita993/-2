@@ -9,6 +9,8 @@ import sqlite3
 import jwt
 import os
 import time
+import random
+import requests
 from dotenv import load_dotenv
 
 # 環境変数の読み込み
@@ -21,6 +23,34 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# ユーザーエージェントのリスト（最新のブラウザバージョン）
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0'
+]
+
+# リクエストヘッダーのテンプレート
+HEADERS_TEMPLATES = [
+    {
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Cache-Control': 'max-age=0'
+    },
+    {
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Cache-Control': 'no-cache'
+    }
+]
 
 # データベース接続関数
 def get_db():
@@ -96,9 +126,17 @@ if 'stock_data_cache' not in st.session_state:
     st.session_state.stock_data_cache = {}
 if 'last_request_time' not in st.session_state:
     st.session_state.last_request_time = {}
+if 'request_count' not in st.session_state:
+    st.session_state.request_count = {}
 
-def get_stock_data(ticker, period, max_retries=3, retry_delay=5):
-    """株価データを取得する（リトライ処理付き）"""
+def get_random_headers():
+    """ランダムなリクエストヘッダーを生成"""
+    headers = random.choice(HEADERS_TEMPLATES).copy()
+    headers['User-Agent'] = random.choice(USER_AGENTS)
+    return headers
+
+def get_stock_data(ticker, period, max_retries=5, base_delay=5):
+    """株価データを取得する（強化版リトライ処理付き）"""
     # キャッシュの確認
     cache_key = f"{ticker}_{period}"
     if cache_key in st.session_state.stock_data_cache:
@@ -107,22 +145,45 @@ def get_stock_data(ticker, period, max_retries=3, retry_delay=5):
         if (datetime.now() - timestamp).total_seconds() < 3600:
             return cached_data
     
-    # レート制限の確認
+    # リクエストカウントの確認
+    current_hour = datetime.now().hour
+    if ticker not in st.session_state.request_count:
+        st.session_state.request_count[ticker] = {'hour': current_hour, 'count': 0}
+    elif st.session_state.request_count[ticker]['hour'] != current_hour:
+        st.session_state.request_count[ticker] = {'hour': current_hour, 'count': 0}
+    
+    # 1時間あたりのリクエスト制限（Yahoo Financeの推奨値）
+    if st.session_state.request_count[ticker]['count'] >= 2000:
+        st.error("1時間あたりのリクエスト制限に達しました。しばらく時間をおいてから再度お試しください。")
+        return None
+    
+    # レート制限の確認とランダムな遅延
     current_time = time.time()
     if ticker in st.session_state.last_request_time:
         last_request = st.session_state.last_request_time[ticker]
-        if current_time - last_request < 2:  # 2秒以上の間隔を空ける
-            time.sleep(2)
+        delay = random.uniform(3, 8)  # 3-8秒のランダムな遅延
+        if current_time - last_request < delay:
+            time.sleep(delay)
     
     for attempt in range(max_retries):
         try:
+            # ランダムなヘッダーを設定
+            headers = get_random_headers()
             normalized_ticker = normalize_ticker(ticker)
+            
+            # セッションを作成してリクエスト
+            session = requests.Session()
+            session.headers.update(headers)
+            
             stock = yf.Ticker(normalized_ticker)
             data = stock.history(period=period)
             
             if len(data) == 0:
                 st.error(f"データが取得できませんでした: {ticker}")
                 return None
+            
+            # リクエストカウントを更新
+            st.session_state.request_count[ticker]['count'] += 1
             
             # キャッシュに保存
             st.session_state.stock_data_cache[cache_key] = (data, datetime.now())
@@ -133,8 +194,10 @@ def get_stock_data(ticker, period, max_retries=3, retry_delay=5):
         except Exception as e:
             if "Too Many Requests" in str(e):
                 if attempt < max_retries - 1:
-                    st.warning(f"リクエスト制限に達しました。{retry_delay}秒後に再試行します...")
-                    time.sleep(retry_delay)
+                    # 指数バックオフによる遅延
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 3)
+                    st.warning(f"リクエスト制限に達しました。{delay:.1f}秒後に再試行します...")
+                    time.sleep(delay)
                     continue
                 else:
                     st.error("リクエスト制限に達しました。しばらく時間をおいてから再度お試しください。")
