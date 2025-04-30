@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-import pandas_ta as ta
+import ta
 import sqlite3
 import jwt
 import os
@@ -54,13 +54,13 @@ def create_token(user_id):
 
 # テクニカル分析関連の関数
 def calculate_rsi(data, period=14):
-    return ta.rsi(data['Close'], length=period)
+    return ta.momentum.RSIIndicator(data['Close'], window=period).rsi()
 
 def calculate_bollinger_bands(data, period=20, num_std=3):
-    bb = ta.bbands(data['Close'], length=period, std=num_std)
-    upper = bb[f'BBU_{period}_{num_std}']
-    lower = bb[f'BBL_{period}_{num_std}']
-    middle = bb[f'BBM_{period}_{num_std}']
+    bb = ta.volatility.BollingerBands(data['Close'], window=period, window_dev=num_std)
+    upper = bb.bollinger_hband()
+    lower = bb.bollinger_lband()
+    middle = bb.bollinger_mavg()
     deviation_upper = (upper - middle) / middle * 100
     deviation_lower = (lower - middle) / middle * 100
     return upper, lower, deviation_upper, deviation_lower
