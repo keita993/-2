@@ -33,107 +33,67 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0'
 ]
 
-# リクエストヘッダーのテンプレート
-HEADERS_TEMPLATES = [
-    {
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Cache-Control': 'max-age=0'
-    },
-    {
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Cache-Control': 'no-cache'
-    }
-]
-
-# データベース接続関数
-def get_db():
-    if 'db_conn' not in st.session_state:
-        st.session_state.db_conn = sqlite3.connect('users.db')
-        st.session_state.db_conn.row_factory = sqlite3.Row
-        # データベースの初期化
-        cursor = st.session_state.db_conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL
-            )
-        ''')
-        st.session_state.db_conn.commit()
-    return st.session_state.db_conn
-
-# ユーザー認証関連の関数
-def create_user(username, password):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('INSERT INTO users (username, password_hash) VALUES (?, ?)',
-                  (username, password))
-    conn.commit()
-
-def get_user(username):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
-    user = cursor.fetchone()
-    return user
-
-def create_token(user_id):
-    payload = {
-        'user': user_id,
-        'exp': datetime.utcnow() + timedelta(days=1)
-    }
-    return jwt.encode(payload, os.getenv('FLASK_SECRET_KEY', 'supersecretkey'), algorithm='HS256')
-
-# テクニカル分析関連の関数
-def calculate_rsi(data, period=14):
-    return ta.momentum.RSIIndicator(data['Close'], window=period).rsi()
-
-def calculate_bollinger_bands(data, period=20, num_std=3):
-    bb = ta.volatility.BollingerBands(data['Close'], window=period, window_dev=num_std)
-    upper = bb.bollinger_hband()
-    lower = bb.bollinger_lband()
-    middle = bb.bollinger_mavg()
-    deviation_upper = (upper - middle) / middle * 100
-    deviation_lower = (lower - middle) / middle * 100
-    return upper, lower, deviation_upper, deviation_lower
-
-def calculate_sdi(data, period=20):
-    """上昇期待値指数（SDI）を計算する"""
-    rsi = calculate_rsi(data)
-    _, _, _, deviation_lower = calculate_bollinger_bands(data)
-    
-    sdi = pd.Series(index=data.index, dtype=float)
-    for i in range(len(data)):
-        if pd.isna(rsi.iloc[i]) or pd.isna(deviation_lower.iloc[i]):
-            sdi.iloc[i] = None
-        else:
-            rsi_component = 50 - rsi.iloc[i]
-            deviation_component = abs(min(0, deviation_lower.iloc[i]))
-            raw_expectation = rsi_component + deviation_component
-            sdi.iloc[i] = raw_expectation * 2 if raw_expectation >= 0 else raw_expectation
-    
-    return sdi
-
-# キャッシュ用のセッション状態の初期化
+# リクエスト制御用のセッション状態の初期化
 if 'stock_data_cache' not in st.session_state:
     st.session_state.stock_data_cache = {}
 if 'last_request_time' not in st.session_state:
     st.session_state.last_request_time = {}
 if 'request_count' not in st.session_state:
-    st.session_state.request_count = {}
+    st.session_state.request_count = {'minute': 0, 'hour': 0, 'last_reset': datetime.now()}
+if 'current_user_agent' not in st.session_state:
+    st.session_state.current_user_agent = random.choice(USER_AGENTS)
 
 def get_random_headers():
     """ランダムなリクエストヘッダーを生成"""
-    headers = random.choice(HEADERS_TEMPLATES).copy()
-    headers['User-Agent'] = random.choice(USER_AGENTS)
+    # 一定時間ごとにユーザーエージェントを変更
+    current_time = datetime.now()
+    if 'last_ua_change' not in st.session_state:
+        st.session_state.last_ua_change = current_time
+    elif (current_time - st.session_state.last_ua_change).total_seconds() >= 300:  # 5分ごとに変更
+        st.session_state.current_user_agent = random.choice(USER_AGENTS)
+        st.session_state.last_ua_change = current_time
+    
+    headers = {
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Cache-Control': 'max-age=0',
+        'User-Agent': st.session_state.current_user_agent
+    }
     return headers
+
+def check_rate_limit():
+    """レート制限のチェックとリセット"""
+    current_time = datetime.now()
+    time_diff = current_time - st.session_state.request_count['last_reset']
+    
+    # 1分ごとのリセット
+    if time_diff.total_seconds() >= 60:
+        st.session_state.request_count['minute'] = 0
+        st.session_state.request_count['last_reset'] = current_time
+    
+    # 1時間ごとのリセット
+    if time_diff.total_seconds() >= 3600:
+        st.session_state.request_count['hour'] = 0
+        st.session_state.request_count['last_reset'] = current_time
+    
+    # 1分間の制限（30リクエスト）
+    if st.session_state.request_count['minute'] >= 30:
+        wait_time = 60 - time_diff.total_seconds()
+        if wait_time > 0:
+            st.warning(f"1分間のリクエスト制限に達しました。{wait_time:.1f}秒待機します...")
+            time.sleep(wait_time)
+            st.session_state.request_count['minute'] = 0
+            st.session_state.request_count['last_reset'] = datetime.now()
+    
+    # 1時間の制限（2000リクエスト）
+    if st.session_state.request_count['hour'] >= 2000:
+        st.error("1時間のリクエスト制限に達しました。しばらく時間をおいてから再度お試しください。")
+        return False
+    
+    return True
 
 def get_stock_data(ticker, period, max_retries=5, base_delay=5):
     """株価データを取得する（強化版リトライ処理付き）"""
@@ -145,23 +105,15 @@ def get_stock_data(ticker, period, max_retries=5, base_delay=5):
         if (datetime.now() - timestamp).total_seconds() < 3600:
             return cached_data
     
-    # リクエストカウントの確認
-    current_hour = datetime.now().hour
-    if ticker not in st.session_state.request_count:
-        st.session_state.request_count[ticker] = {'hour': current_hour, 'count': 0}
-    elif st.session_state.request_count[ticker]['hour'] != current_hour:
-        st.session_state.request_count[ticker] = {'hour': current_hour, 'count': 0}
-    
-    # 1時間あたりのリクエスト制限（Yahoo Financeの推奨値）
-    if st.session_state.request_count[ticker]['count'] >= 2000:
-        st.error("1時間あたりのリクエスト制限に達しました。しばらく時間をおいてから再度お試しください。")
+    # レート制限のチェック
+    if not check_rate_limit():
         return None
     
-    # レート制限の確認とランダムな遅延
+    # リクエスト間隔の制御
     current_time = time.time()
     if ticker in st.session_state.last_request_time:
         last_request = st.session_state.last_request_time[ticker]
-        delay = random.uniform(3, 8)  # 3-8秒のランダムな遅延
+        delay = random.uniform(3, 10)  # 3-10秒のランダムな遅延
         if current_time - last_request < delay:
             time.sleep(delay)
     
@@ -175,15 +127,20 @@ def get_stock_data(ticker, period, max_retries=5, base_delay=5):
             session = requests.Session()
             session.headers.update(headers)
             
-            stock = yf.Ticker(normalized_ticker)
-            data = stock.history(period=period)
+            # 複数銘柄の一括取得を試みる
+            if isinstance(ticker, list):
+                data = yf.download(ticker, period=period)
+            else:
+                stock = yf.Ticker(normalized_ticker)
+                data = stock.history(period=period)
             
             if len(data) == 0:
                 st.error(f"データが取得できませんでした: {ticker}")
                 return None
             
             # リクエストカウントを更新
-            st.session_state.request_count[ticker]['count'] += 1
+            st.session_state.request_count['minute'] += 1
+            st.session_state.request_count['hour'] += 1
             
             # キャッシュに保存
             st.session_state.stock_data_cache[cache_key] = (data, datetime.now())
@@ -227,6 +184,35 @@ def get_stock_name(ticker):
         return stock_name, stock_info
     except:
         return ticker_to_fetch, None
+
+def calculate_rsi(data, period=14):
+    return ta.momentum.RSIIndicator(data['Close'], window=period).rsi()
+
+def calculate_bollinger_bands(data, period=20, num_std=3):
+    bb = ta.volatility.BollingerBands(data['Close'], window=period, window_dev=num_std)
+    upper = bb.bollinger_hband()
+    lower = bb.bollinger_lband()
+    middle = bb.bollinger_mavg()
+    deviation_upper = (upper - middle) / middle * 100
+    deviation_lower = (lower - middle) / middle * 100
+    return upper, lower, deviation_upper, deviation_lower
+
+def calculate_sdi(data, period=20):
+    """上昇期待値指数（SDI）を計算する"""
+    rsi = calculate_rsi(data)
+    _, _, _, deviation_lower = calculate_bollinger_bands(data)
+    
+    sdi = pd.Series(index=data.index, dtype=float)
+    for i in range(len(data)):
+        if pd.isna(rsi.iloc[i]) or pd.isna(deviation_lower.iloc[i]):
+            sdi.iloc[i] = None
+        else:
+            rsi_component = 50 - rsi.iloc[i]
+            deviation_component = abs(min(0, deviation_lower.iloc[i]))
+            raw_expectation = rsi_component + deviation_component
+            sdi.iloc[i] = raw_expectation * 2 if raw_expectation >= 0 else raw_expectation
+    
+    return sdi
 
 def calculate_backtest(data, buy_threshold=30, sell_threshold=0, disable_sell=False, shares=100):
     """バックテストを実行する"""
